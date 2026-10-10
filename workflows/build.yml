@@ -1,0 +1,102 @@
+name: Build macOS App
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Swift version
+        run: swift --version
+
+      - name: Cache SwiftPM
+        uses: actions/cache@v4
+        with:
+          path: |
+            .build
+            ~/Library/Caches/org.swift.swiftpm
+          key: ${{ runner.os }}-spm-${{ hashFiles('Package.swift') }}
+          restore-keys: |
+            ${{ runner.os }}-spm-
+
+      - name: Build (universal: arm64 + x86_64)
+        run: |
+          swift build -c release --arch arm64 --arch x86_64
+
+      - name: Locate binary
+        id: locate
+        run: |
+          BIN_PATH=$(find .build -type f -name HitmozDownloader -perm -111 | grep -E "apple/Products/Release" | head -n 1)
+          if [ -z "$BIN_PATH" ]; then
+            BIN_PATH=$(find .build -type f -name HitmozDownloader -perm -111 | head -n 1)
+          fi
+          echo "Binary: $BIN_PATH"
+          echo "bin=$BIN_PATH" >> $GITHUB_OUTPUT
+
+      - name: Package .app bundle
+        run: |
+          APP_NAME="HitmozDownloader"
+          APP_DIR="dist/${APP_NAME}.app"
+          mkdir -p "${APP_DIR}/Contents/MacOS"
+          mkdir -p "${APP_DIR}/Contents/Resources"
+
+          cp "${{ steps.locate.outputs.bin }}" "${APP_DIR}/Contents/MacOS/${APP_NAME}"
+          chmod +x "${APP_DIR}/Contents/MacOS/${APP_NAME}"
+
+          cat > "${APP_DIR}/Contents/Info.plist" <<'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleName</key>
+              <string>HitmozDownloader</string>
+              <key>CFBundleDisplayName</key>
+              <string>Hitmoz Downloader</string>
+              <key>CFBundleIdentifier</key>
+              <string>com.example.hitmozdownloader</string>
+              <key>CFBundleVersion</key>
+              <string>1.0.0</string>
+              <key>CFBundleShortVersionString</key>
+              <string>1.0.0</string>
+              <key>CFBundleExecutable</key>
+              <string>HitmozDownloader</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>LSMinimumSystemVersion</key>
+              <string>13.0</string>
+              <key>NSHighResolutionCapable</key>
+              <true/>
+              <key>NSPrincipalClass</key>
+              <string>NSApplication</string>
+          </dict>
+          </plist>
+          EOF
+
+          # Снимаем карантин (иначе macOS может блокировать запуск)
+          xattr -cr "${APP_DIR}" || true
+
+          cd dist
+          zip -r -y HitmozDownloader.zip HitmozDownloader.app
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HitmozDownloader-macOS
+          path: dist/HitmozDownloader.zip
+          if-no-files-found: error
+
+      - name: Create Release (on tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/HitmozDownloader.zip
